@@ -1,0 +1,47 @@
+name: Run Application Advisor
+on:   # Trigger manually, on push to main, or when Merge workflow completes
+  workflow_dispatch:
+  push:
+    branches: [ "main" ]
+  workflow_run:
+    workflows: ["Merge Pull Request"]
+    types:
+      - completed
+jobs:
+  run-app-advisor:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+      - name: Enable access to Spring Enterprise Artifactory
+        uses: 's4u/maven-settings-action@v3.0.0'
+        with:
+          servers: '[{"id": "tanzu-spring-release", "username":  "${{ secrets.BC_USER }}", "password": "${{ secrets.BC_PWD }}"}]'
+          repositories: '[{"id":"tanzu-spring-release", "name":"Spring Enterprise Supported Releases","url":"https://packages.broadcom.com/artifactory/spring-enterprise","snapshots":{"enabled":false}}]'
+      - name: Install advisor CLI
+        env:
+          ARTIFACTORY_TOKEN: ${{ secrets.advisor_artifactory_token }}
+          VERSION: ${{ secrets.advisor_version }}
+        run: |
+          curl -L -H "Authorization: Bearer $ARTIFACTORY_TOKEN" -o /tmp/advisor-cli.tar -X GET https://packages.broadcom.com/artifactory/spring-enterprise/com/vmware/tanzu/spring/application-advisor-cli-linux/${VERSION}/application-advisor-cli-linux-${VERSION}.tar
+          tar -xf /tmp/advisor-cli.tar --strip-components=1 --exclude=./META-INF -C /tmp && install /tmp/advisor /usr/local/bin/advisor
+          advisor --version
+      - name: Apply advisor upgrade plan
+        env:
+          GIT_TOKEN_FOR_PRS: ${{ secrets.advisor_git_token_for_prs }}
+        continue-on-error: true
+        run: |
+          advisor upgrade-plan apply --from-yml --push --token=$GIT_TOKEN_FOR_PRS
+      - name: Get errors if exist
+        if: ${{ hashFiles('.advisor/errors/') != '' }}
+        run: |
+          cat .advisor/errors/*
+          echo "❌ Errors detected in .advisor/errors/! Failing the workflow."
+          exit 1
